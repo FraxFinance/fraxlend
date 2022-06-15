@@ -91,6 +91,16 @@ contract FraxlendPairDeployer is Ownable {
 
     constructor() Ownable() {}
 
+    function getAllPairAddresses() external view returns (address[] memory) {
+        uint256 _lengthOfArray = deployedPairsArray.length;
+        address[] memory _addresses = new address[](_lengthOfArray);
+        string[] memory _deployedPairsArray = deployedPairsArray;
+        for (uint256 i = 0; i < _lengthOfArray; i++) {
+            _addresses[i] = deployedPairsByName[_deployedPairsArray[i]];
+        }
+        return _addresses;
+    }
+
     function setCreationCode(bytes memory _creationCode) external onlyOwner {
         contractAddress = SSTORE2.write(_creationCode);
     }
