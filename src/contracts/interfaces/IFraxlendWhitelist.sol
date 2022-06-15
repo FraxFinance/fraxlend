@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity >=0.8.12;
+pragma solidity >=0.8.13;
 
 interface IFraxlendWhitelist {
     function TIME_LOCK_ADDRESS() external view returns (address);

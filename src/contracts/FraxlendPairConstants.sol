@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.12;
+pragma solidity ^0.8.13;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -68,4 +68,6 @@ abstract contract FraxlendPairConstants {
     error BadSwapper();
     error InvalidPath(address _expected, address _actual);
     error BadProtocolFee();
+    error ViolateMaxMintDeposit();
+    error BorrowerWhitelistRequired();
 }

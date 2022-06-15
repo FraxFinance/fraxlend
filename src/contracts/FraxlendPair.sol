@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.12;
+pragma solidity ^0.8.13;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -171,14 +171,16 @@ contract FraxlendPair is FraxlendPairCore {
 
         // We must calculate this before we subtract from _totalAsset or invoke _burn
         _amountToTransfer = _totalAsset.toAmount(_shares, true);
-        _totalAsset.amount -= uint128(_amountToTransfer);
-        _totalAsset.shares -= _shares;
 
         // Check for sufficient withdraw liquidity
         uint256 _assetsAvailable = _totalAssetAvailable(_totalAsset, _totalBorrow);
         if (_assetsAvailable < _amountToTransfer) {
             revert InsufficientAssetsInContract(_assetsAvailable, _amountToTransfer);
         }
+
+        // Effects: bookkeeping
+        _totalAsset.amount -= uint128(_amountToTransfer);
+        _totalAsset.shares -= _shares;
 
         // Effects: write to states
         // NOTE: will revert if _shares > balanceOf(address(this))

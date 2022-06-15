@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity >=0.8.12;
+pragma solidity >=0.8.13;
 
 interface IRateCalculator {
     function name() external pure returns (string memory);

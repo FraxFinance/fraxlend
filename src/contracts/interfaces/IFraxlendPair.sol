@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity >=0.8.12;
+pragma solidity >=0.8.13;
 
 interface IFraxlendPair {
     function addCollateral(uint256 _collateralAmount, address _borrower) external;
@@ -15,8 +15,6 @@ interface IFraxlendPair {
     function approvedLenders(address) external view returns (bool);
 
     function asset() external view returns (address);
-
-    function assetContract() external view returns (address);
 
     function assetsOf(address _depositor) external view returns (uint256 _assets);
 
@@ -50,7 +48,7 @@ interface IFraxlendPair {
             uint64 ratePerSec
         );
 
-    function decimals() external view returns (uint8);
+    function decimals() external pure returns (uint8);
 
     function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool);
 
@@ -59,17 +57,6 @@ interface IFraxlendPair {
     function deposit(uint256 _amount, address _receiver) external returns (uint256 _sharesReceived);
 
     function exchangeRateInfo() external view returns (uint32 lastTimestamp, uint224 exchangeRate);
-
-    function getAccountSnapshot(address _account)
-        external
-        view
-        returns (
-            uint256 _assetShares,
-            uint256 _assetAmount,
-            uint256 _borrowShares,
-            uint256 _borrowAmount,
-            uint256 _collateralAmount
-        );
 
     function increaseAllowance(address spender, uint256 addedValue) external returns (bool);
 
