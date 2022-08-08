@@ -1,0 +1,16 @@
+# files
+.DS_Store
+node_modules
+
+# env
+.env
+
+# foundry
+out
+cache
+
+# hardhat
+artifacts
+
+# typechain
+typechain
