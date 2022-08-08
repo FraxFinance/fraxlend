@@ -1,9 +1,5 @@
 import * as fs from "fs";
 import { config as dotenvConfig } from "dotenv";
-import "@nomiclabs/hardhat-ethers";
-import '@typechain/hardhat'
-import '@nomiclabs/hardhat-ethers'
-import '@nomiclabs/hardhat-waffle'
 import { HardhatUserConfig } from "hardhat/config";
 import "hardhat-gas-reporter";
 import "hardhat-preprocessor";
@@ -94,10 +90,6 @@ const config: HardhatUserConfig = {
         },
       },
     ],
-  },
-  typechain: {
-    outDir: "./typechain/types",
-    target: "ethers-v5",
   },
   preprocess: {
     eachLine: (hre) => ({

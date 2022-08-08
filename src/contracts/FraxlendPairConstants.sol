@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.16;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -38,19 +38,11 @@ abstract contract FraxlendPairConstants {
     uint256 internal constant EXCHANGE_PRECISION = 1e18;
 
     // Default Interest Rate (if borrows = 0)
-    uint64 internal constant DEFAULT_INT = 158247046; // 0.5% annual rate
-
-    // Admin contracts
-    address internal constant TIME_LOCK_ADDRESS = 0x8412ebf45bAC1B340BbE8F318b928C466c4E39CA;
-    address internal constant COMPTROLLER_ADDRESS = 0x8D8Cb63BcB8AD89Aa750B9f80Aa8Fa4CfBcC8E0C;
-
-    // Dependencies
-    address internal constant FRAXLEND_WHITELIST = address(1234); // TODO: update this
-    address internal constant FRAXSWAP_ROUTER = 0xE52D0337904D4D0519EF7487e707268E1DB6495F;
+    uint64 internal constant DEFAULT_INT = 158049988; // 0.5% annual rate 1e18 precision
 
     // Protocol Fee
-    uint16 internal constant DEFAULT_PROTOCOL_FEE = 0;
-    uint256 internal constant MAX_PROTOCOL_FEE = 5e4; // 50%
+    uint16 internal constant DEFAULT_PROTOCOL_FEE = 0; // 1e5 precision
+    uint256 internal constant MAX_PROTOCOL_FEE = 5e4; // 50% 1e5 precision
 
     error Insolvent(uint256 _borrow, uint256 _collateral, uint256 _exchangeRate);
     error BorrowerSolvent();
@@ -68,6 +60,8 @@ abstract contract FraxlendPairConstants {
     error BadSwapper();
     error InvalidPath(address _expected, address _actual);
     error BadProtocolFee();
-    error ViolateMaxMintDeposit();
     error BorrowerWhitelistRequired();
+    error OnlyTimeLock();
+    error PriceTooLarge();
+    error PastDeadline(uint256 _blockTimestamp, uint256 _deadline);
 }

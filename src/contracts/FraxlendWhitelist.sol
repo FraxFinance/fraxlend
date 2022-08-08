@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.16;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -25,16 +25,9 @@ pragma solidity ^0.8.13;
 
 // ====================================================================
 
-import "./interfaces/IFraxlendWhitelist.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-// debugging only
-// import "lib/ds-test/src/test.sol";
-
-contract FraxlendWhitelist is IFraxlendWhitelist {
-    // Constants
-    address public constant TIME_LOCK_ADDRESS = 0x8412ebf45bAC1B340BbE8F318b928C466c4E39CA;
-    address public constant COMPTROLLER_ADDRESS = 0x8D8Cb63BcB8AD89Aa750B9f80Aa8Fa4CfBcC8E0C;
-
+contract FraxlendWhitelist is Ownable {
     // Oracle Whitelist Storage
     mapping(address => bool) public oracleContractWhitelist;
 
@@ -44,32 +37,50 @@ contract FraxlendWhitelist is IFraxlendWhitelist {
     // Fraxlend Deployer Whitelist Storage
     mapping(address => bool) public fraxlendDeployerWhitelist;
 
-    modifier onlyByAdmin() {
-        require(
-            msg.sender == TIME_LOCK_ADDRESS || msg.sender == COMPTROLLER_ADDRESS,
-            "FraxlendPair: Authorized addresses only"
-        );
-        _;
-    }
+    constructor() Ownable() {}
 
-    // Oracle Whitelist setter
-    function setOracleContractWhitelist(address[] calldata _addresses, bool _bool) external onlyByAdmin {
+    /// @notice The ```SetOracleWhitelist``` event fires whenever a status is set for a given address
+    /// @param _address address being set
+    /// @param _bool approval being set
+    event SetOracleWhitelist(address indexed _address, bool _bool);
+
+    /// @notice The ```setOracleContractWhitelist``` function sets a given address to true/false for use as oracle
+    /// @param _addresses addresses to set status for
+    /// @param _bool status of approval
+    function setOracleContractWhitelist(address[] calldata _addresses, bool _bool) external onlyOwner {
         for (uint256 i = 0; i < _addresses.length; i++) {
             oracleContractWhitelist[_addresses[i]] = _bool;
+            emit SetOracleWhitelist(_addresses[i], _bool);
         }
     }
 
-    // Interest Rate Calculator Whitelist setter
-    function setRateContractWhitelist(address[] calldata _addresses, bool _bool) external onlyByAdmin {
+    /// @notice The ```SetRateContractWhitelist``` event fires whenever a status is set for a given address
+    /// @param _address address being set
+    /// @param _bool approval being set
+    event SetRateContractWhitelist(address indexed _address, bool _bool);
+
+    /// @notice The ```setRateContractWhitelist``` function sets a given address to true/false for use as a Rate Calculator
+    /// @param _addresses addresses to set status for
+    /// @param _bool status of approval
+    function setRateContractWhitelist(address[] calldata _addresses, bool _bool) external onlyOwner {
         for (uint256 i = 0; i < _addresses.length; i++) {
             rateContractWhitelist[_addresses[i]] = _bool;
+            emit SetRateContractWhitelist(_addresses[i], _bool);
         }
     }
 
-    // FraxlendDeployer Whitelist setter
-    function setFraxlendDeployerWhitelist(address[] calldata _addresses, bool _bool) external onlyByAdmin {
+    /// @notice The ```SetFraxlendDeployerWhitelist``` event fires whenever a status is set for a given address
+    /// @param _address address being set
+    /// @param _bool approval being set
+    event SetFraxlendDeployerWhitelist(address indexed _address, bool _bool);
+
+    /// @notice The ```setFraxlendDeployerWhitelist``` function sets a given address to true/false for use as a custom deployer
+    /// @param _addresses addresses to set status for
+    /// @param _bool status of approval
+    function setFraxlendDeployerWhitelist(address[] calldata _addresses, bool _bool) external onlyOwner {
         for (uint256 i = 0; i < _addresses.length; i++) {
             fraxlendDeployerWhitelist[_addresses[i]] = _bool;
+            emit SetFraxlendDeployerWhitelist(_addresses[i], _bool);
         }
     }
 }

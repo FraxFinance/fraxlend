@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.16;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -27,12 +27,9 @@ pragma solidity ^0.8.13;
 
 import "./interfaces/IRateCalculator.sol";
 
-// debugging only
-// import "lib/ds-test/src/test.sol";
-
-/// @title A formula for calculating interest rates linearly as a function of utilization
+/// @title A formula for calculating interest rates as a function of utilization and time
 /// @author Drake Evans github.com/drakeevans
-/// @notice A Contract for calulcating interest rates as a function of utilization and time
+/// @notice A Contract for calculating interest rates as a function of utilization and time
 contract VariableInterestRate is IRateCalculator {
     // Utilization Rate Settings
     uint32 private constant MIN_UTIL = 75000; // 75%
@@ -40,22 +37,27 @@ contract VariableInterestRate is IRateCalculator {
     uint32 private constant UTIL_PREC = 1e5; // 5 decimals
 
     // Interest Rate Settings (all rates are per second), 365.24 days per year
-    uint64 internal constant MIN_INT = 79123523; // 0.25% annual rate
-    uint64 internal constant MAX_INT = 146248508681; // 10,000% annual rate
-    uint256 private constant INT_HALF_LIFE = 14400e36; // given in seconds, equal to 4 hours, additional 1e36 to make math simpler
+    uint64 private constant MIN_INT = 79123523; // 0.25% annual rate
+    uint64 private constant MAX_INT = 146248476607; // 10,000% annual rate
+    uint256 private constant INT_HALF_LIFE = 43200e36; // given in seconds, equal to 12 hours, additional 1e36 to make math simpler
 
+    /// @notice The ```name``` function returns the name of the rate contract
+    /// @return memory name of contract
     function name() external pure returns (string memory) {
         return "Variable Time-Weighted Interest Rate";
     }
 
+    /// @notice The ```getConstants``` function returns abi encoded constants
+    /// @return _calldata abi.encode(uint32 MIN_UTIL, uint32 MAX_UTIL, uint32 UTIL_PREC, uint64 MIN_INT, uint64 MAX_INT, uint256 INT_HALF_LIFE)
     function getConstants() external pure returns (bytes memory _calldata) {
         return abi.encode(MIN_UTIL, MAX_UTIL, UTIL_PREC, MIN_INT, MAX_INT, INT_HALF_LIFE);
     }
 
+    /// @notice The ```requireValidInitData``` function No-op as this contract has no init data
     function requireValidInitData(bytes calldata _initData) external pure {}
 
     /// @notice The ```getNewRate``` function calculates the new interest rate as a function of time and utilization
-    /// @param _data abi.encode(uint64 _currentRatePerSec, uint256 _deltaTime, uint256 _utilization)
+    /// @param _data abi.encode(uint64 _currentRatePerSec, uint256 _deltaTime, uint256 _utilization, uint256 _deltaBlocks)
     /// @param _initData empty for this Rate Calculator
     /// @return _newRatePerSec The new interest rate per second, 1e18 precision
     function getNewRate(bytes calldata _data, bytes calldata _initData) external pure returns (uint64 _newRatePerSec) {

@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: ISC
-pragma solidity >=0.8.13;
+pragma solidity >=0.8.16;
 
 interface IFraxlendWhitelist {
-    function TIME_LOCK_ADDRESS() external view returns (address);
-
-    function COMPTROLLER_ADDRESS() external view returns (address);
+    function fraxlendDeployerWhitelist(address) external view returns (bool);
 
     function oracleContractWhitelist(address) external view returns (bool);
 
+    function owner() external view returns (address);
+
     function rateContractWhitelist(address) external view returns (bool);
 
-    function fraxlendDeployerWhitelist(address) external view returns (bool);
+    function renounceOwnership() external;
 
-    function setOracleContractWhitelist(address[] calldata _address, bool _bool) external;
+    function setFraxlendDeployerWhitelist(address[] calldata _addresses, bool _bool) external;
 
-    function setRateContractWhitelist(address[] calldata _address, bool _bool) external;
+    function setOracleContractWhitelist(address[] calldata _addresses, bool _bool) external;
 
-    function setFraxlendDeployerWhitelist(address[] calldata _address, bool _bool) external;
+    function setRateContractWhitelist(address[] calldata _addresses, bool _bool) external;
+
+    function transferOwnership(address newOwner) external;
 }
