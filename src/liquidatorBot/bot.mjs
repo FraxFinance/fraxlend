@@ -78,11 +78,16 @@ const checkPositionThenArb = async (
 ) => {
   // Get some user accounting information
   const [ , borrowShares, collateralBalance] = await fraxlendPairHelper.getUserSnapshot(pairAddress, borrowerAddress);
-  
+
+  if (collateralBalance == 0) {
+    console.log('cant calculate LTV, collateralBalance is 0');
+    return;
+  }
+
   // Calculate LTV
   const userBorrowAmount = borrowShares.mul(totalBorrowAmount).div(totalBorrowShares);
   const userLTV = userBorrowAmount.mul(exchangeRate).div(BigInt(1e18)).mul(1e5).div(collateralBalance);
-  if (userLTV.gt(75000)) {
+  if (userLTV.gt(75000)) { // a user with a current LTV > 75% is liquidatable
     const fraxlendPair = new ethers.Contract(pairAddress, fraxlendPairAbi, new ethers.Wallet(process.env.PRIVATE_KEY, provider));
     const blockInfo = await provider.getBlock(await provider.getBlockNumber());
 
