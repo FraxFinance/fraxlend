@@ -20,6 +20,7 @@ const FRAXLEND_PAIR_HELPER_ADDRESS = '0x26fa88b783cE712a2Fa10E91296Caf3daAE0AB37
 const provider = new ethers.providers.AlchemyProvider('homestead', process.env.MAINNET_KEY);
 
 const main = async () => {
+  console.log('\nentering main...\n')
   // Get list of pairs
   const fraxlendPairDeployer = new ethers.Contract(FRAXLEND_DEPLOYER_ADDRESS, fraxlendPairDeployerAbi, provider);
   const fraxlendPairAddresses = await fraxlendPairDeployer.getAllPairAddresses();
@@ -80,13 +81,15 @@ const checkPositionThenArb = async (
   const [ , borrowShares, collateralBalance] = await fraxlendPairHelper.getUserSnapshot(pairAddress, borrowerAddress);
 
   if (collateralBalance == 0) {
-    console.log('cant calculate LTV, collateralBalance is 0');
+    console.log('cant calculate LTV, collateralBalance is 0\n');
     return;
   }
 
   // Calculate LTV
   const userBorrowAmount = borrowShares.mul(totalBorrowAmount).div(totalBorrowShares);
+  console.log('userBorrowAmount: ', (Number(userBorrowAmount) / 1e18).toLocaleString('en-US', {style: 'currency', currency: 'USD', minimumFractionDigits:2}))
   const userLTV = userBorrowAmount.mul(exchangeRate).div(BigInt(1e18)).mul(1e5).div(collateralBalance);
+  console.log('userLTV: ', (Number(userLTV) / 1e5).toLocaleString(undefined, {style: 'percent', minimumFractionDigits:2}), '\n')
   if (userLTV.gt(75000)) { // a user with a current LTV > 75% is liquidatable
     const fraxlendPair = new ethers.Contract(pairAddress, fraxlendPairAbi, new ethers.Wallet(process.env.PRIVATE_KEY, provider));
     const blockInfo = await provider.getBlock(await provider.getBlockNumber());
@@ -98,4 +101,8 @@ const checkPositionThenArb = async (
     }
   }
 };
-main();
+while (true) {
+
+  main();
+  await new Promise(r => setTimeout(r, 10000));
+}
