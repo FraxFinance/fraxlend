@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.16;
+pragma solidity ^0.8.19;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -25,43 +25,35 @@ pragma solidity ^0.8.16;
 
 // ====================================================================
 
+/// @title FraxlendPairConstants
+/// @author Drake Evans (Frax Finance) https://github.com/drakeevans
+/// @notice  An abstract contract which contains the errors and constants for the FraxlendPair contract
 abstract contract FraxlendPairConstants {
     // ============================================================================================
     // Constants
     // ============================================================================================
 
     // Precision settings
-    uint256 internal constant LTV_PRECISION = 1e5; // 5 decimals
-    uint256 internal constant LIQ_PRECISION = 1e5;
-    uint256 internal constant UTIL_PREC = 1e5;
-    uint256 internal constant FEE_PRECISION = 1e5;
-    uint256 internal constant EXCHANGE_PRECISION = 1e18;
-
-    // Default Interest Rate (if borrows = 0)
-    uint64 internal constant DEFAULT_INT = 158049988; // 0.5% annual rate 1e18 precision
+    uint256 public constant LTV_PRECISION = 1e5; // 5 decimals
+    uint256 public constant LIQ_PRECISION = 1e5;
+    uint256 public constant UTIL_PREC = 1e5;
+    uint256 public constant FEE_PRECISION = 1e5;
+    uint256 public constant EXCHANGE_PRECISION = 1e18;
+    uint256 public constant DEVIATION_PRECISION = 1e5;
+    uint256 public constant RATE_PRECISION = 1e18;
 
     // Protocol Fee
-    uint16 internal constant DEFAULT_PROTOCOL_FEE = 0; // 1e5 precision
-    uint256 internal constant MAX_PROTOCOL_FEE = 5e4; // 50% 1e5 precision
+    uint256 public constant MAX_PROTOCOL_FEE = 5e4; // 50% 1e5 precision
 
     error Insolvent(uint256 _borrow, uint256 _collateral, uint256 _exchangeRate);
     error BorrowerSolvent();
-    error OnlyApprovedBorrowers();
-    error OnlyApprovedLenders();
-    error PastMaturity();
-    error ProtocolOrOwnerOnly();
-    error OracleLTEZero(address _oracle);
     error InsufficientAssetsInContract(uint256 _assets, uint256 _request);
-    error NotOnWhitelist(address _address);
-    error NotDeployer();
-    error NameEmpty();
-    error AlreadyInitialized();
     error SlippageTooHigh(uint256 _minOut, uint256 _actual);
     error BadSwapper();
     error InvalidPath(address _expected, address _actual);
     error BadProtocolFee();
-    error BorrowerWhitelistRequired();
-    error OnlyTimeLock();
-    error PriceTooLarge();
     error PastDeadline(uint256 _blockTimestamp, uint256 _deadline);
+    error SetterRevoked();
+    error ExceedsMaxOracleDeviation();
+    error InvalidReceiver();
 }
