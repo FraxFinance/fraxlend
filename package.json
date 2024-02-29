@@ -35,8 +35,5 @@
     "solidity-coverage": "^0.7.21",
     "ts-node": "^10.9.1",
     "typechain": "^8.1.0"
-  },
-  "dependencies": {
-    "@mean-finance/uniswap-v3-oracle": "^1.0.3"
   }
 }

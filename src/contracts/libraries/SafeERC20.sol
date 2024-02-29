@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.16;
 
-import { IERC20 } from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import { SafeERC20 as OZSafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // solhint-disable avoid-low-level-calls
@@ -57,11 +57,20 @@ library SafeERC20 {
         return success && data.length == 32 ? abi.decode(data, (uint8)) : 18;
     }
 
-    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+    function safeTransfer(
+        IERC20 token,
+        address to,
+        uint256 value
+    ) internal {
         OZSafeERC20.safeTransfer(token, to, value);
     }
 
-    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+    function safeTransferFrom(
+        IERC20 token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
         OZSafeERC20.safeTransferFrom(token, from, to, value);
     }
 }

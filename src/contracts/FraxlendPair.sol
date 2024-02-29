@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.16;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -25,35 +25,47 @@ pragma solidity ^0.8.19;
 
 // ====================================================================
 
-import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import { FraxlendPairConstants } from "./FraxlendPairConstants.sol";
-import { FraxlendPairCore } from "./FraxlendPairCore.sol";
-import { Timelock2Step } from "./Timelock2Step.sol";
-import { SafeERC20 } from "./libraries/SafeERC20.sol";
-import { VaultAccount, VaultAccountingLibrary } from "./libraries/VaultAccount.sol";
-import { IRateCalculatorV2 } from "./interfaces/IRateCalculatorV2.sol";
-import { ISwapper } from "./interfaces/ISwapper.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "./FraxlendPairConstants.sol";
+import "./FraxlendPairCore.sol";
+import "./libraries/VaultAccount.sol";
+import "./libraries/SafeERC20.sol";
+import "./interfaces/IERC4626.sol";
+import "./interfaces/IFraxlendWhitelist.sol";
+import "./interfaces/IRateCalculator.sol";
+import "./interfaces/ISwapper.sol";
 
-/// @title FraxlendPair
-/// @author Drake Evans (Frax Finance) https://github.com/drakeevans
-/// @notice  The FraxlendPair is a lending pair that allows users to engage in lending and borrowing activities
 contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
     using VaultAccountingLibrary for VaultAccount;
     using SafeERC20 for IERC20;
-    using SafeCast for uint256;
 
-    /// @param _configData abi.encode(address _asset, address _collateral, address _oracle, uint32 _maxOracleDeviation, address _rateContract, uint64 _fullUtilizationRate, uint256 _maxLTV, uint256 _cleanLiquidationFee, uint256 _dirtyLiquidationFee, uint256 _protocolLiquidationFee)
-    /// @param _immutables abi.encode(address _circuitBreakerAddress, address _comptrollerAddress, address _timelockAddress)
-    /// @param _customConfigData abi.encode(string memory _nameOfContract, string memory _symbolOfContract, uint8 _decimalsOfContract)
     constructor(
         bytes memory _configData,
         bytes memory _immutables,
-        bytes memory _customConfigData
-    ) FraxlendPairCore(_configData, _immutables, _customConfigData) {}
+        uint256 _maxLTV,
+        uint256 _liquidationFee,
+        uint256 _maturityDate,
+        uint256 _penaltyRate,
+        bool _isBorrowerWhitelistActive,
+        bool _isLenderWhitelistActive
+    )
+        FraxlendPairCore(
+            _configData,
+            _immutables,
+            _maxLTV,
+            _liquidationFee,
+            _maturityDate,
+            _penaltyRate,
+            _isBorrowerWhitelistActive,
+            _isLenderWhitelistActive
+        )
+        ERC20("", "")
+        Ownable()
+        Pausable()
+    {}
 
     // ============================================================================================
     // ERC20 Metadata
@@ -64,11 +76,13 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
     }
 
     function symbol() public view override(ERC20, IERC20Metadata) returns (string memory) {
-        return symbolOfContract;
+        // prettier-ignore
+        // solhint-disable-next-line max-line-length
+        return string(abi.encodePacked("FraxlendV1 - ", collateralContract.safeSymbol(), "/", assetContract.safeSymbol()));
     }
 
-    function decimals() public view override(ERC20, IERC20Metadata) returns (uint8) {
-        return decimalsOfContract;
+    function decimals() public pure override(ERC20, IERC20Metadata) returns (uint8) {
+        return 18;
     }
 
     // totalSupply for fToken ERC20 compatibility
@@ -93,8 +107,8 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
             uint256 _UTIL_PREC,
             uint256 _FEE_PRECISION,
             uint256 _EXCHANGE_PRECISION,
-            uint256 _DEVIATION_PRECISION,
-            uint256 _RATE_PRECISION,
+            uint64 _DEFAULT_INT,
+            uint16 _DEFAULT_PROTOCOL_FEE,
             uint256 _MAX_PROTOCOL_FEE
         )
     {
@@ -103,9 +117,72 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
         _UTIL_PREC = UTIL_PREC;
         _FEE_PRECISION = FEE_PRECISION;
         _EXCHANGE_PRECISION = EXCHANGE_PRECISION;
-        _DEVIATION_PRECISION = DEVIATION_PRECISION;
-        _RATE_PRECISION = RATE_PRECISION;
+        _DEFAULT_INT = DEFAULT_INT;
+        _DEFAULT_PROTOCOL_FEE = DEFAULT_PROTOCOL_FEE;
         _MAX_PROTOCOL_FEE = MAX_PROTOCOL_FEE;
+    }
+
+    /// @notice The ```getImmutableAddressBool``` function gets all the address and bool configs
+    /// @return _assetContract Address of asset
+    /// @return _collateralContract Address of collateral
+    /// @return _oracleMultiply Address of oracle numerator
+    /// @return _oracleDivide Address of oracle denominator
+    /// @return _rateContract Address of rate contract
+    /// @return _DEPLOYER_CONTRACT Address of deployer contract
+    /// @return _COMPTROLLER_ADDRESS Address of comptroller
+    /// @return _FRAXLEND_WHITELIST Address of whitelist
+    /// @return _borrowerWhitelistActive Boolean is borrower whitelist active
+    /// @return _lenderWhitelistActive Boolean is lender whitelist active
+    function getImmutableAddressBool()
+        external
+        view
+        returns (
+            address _assetContract,
+            address _collateralContract,
+            address _oracleMultiply,
+            address _oracleDivide,
+            address _rateContract,
+            address _DEPLOYER_CONTRACT,
+            address _COMPTROLLER_ADDRESS,
+            address _FRAXLEND_WHITELIST,
+            bool _borrowerWhitelistActive,
+            bool _lenderWhitelistActive
+        )
+    {
+        _assetContract = address(assetContract);
+        _collateralContract = address(collateralContract);
+        _oracleMultiply = oracleMultiply;
+        _oracleDivide = oracleDivide;
+        _rateContract = address(rateContract);
+        _DEPLOYER_CONTRACT = DEPLOYER_ADDRESS;
+        _COMPTROLLER_ADDRESS = COMPTROLLER_ADDRESS;
+        _FRAXLEND_WHITELIST = FRAXLEND_WHITELIST_ADDRESS;
+        _borrowerWhitelistActive = borrowerWhitelistActive;
+        _lenderWhitelistActive = lenderWhitelistActive;
+    }
+
+    /// @notice The ```getImmutableUint256``` function gets all uint256 config values
+    /// @return _oracleNormalization Oracle normalization factor
+    /// @return _maxLTV Maximum LTV
+    /// @return _cleanLiquidationFee Clean Liquidation Fee
+    /// @return _maturityDate Maturity Date
+    /// @return _penaltyRate Penalty Rate
+    function getImmutableUint256()
+        external
+        view
+        returns (
+            uint256 _oracleNormalization,
+            uint256 _maxLTV,
+            uint256 _cleanLiquidationFee,
+            uint256 _maturityDate,
+            uint256 _penaltyRate
+        )
+    {
+        _oracleNormalization = oracleNormalization;
+        _maxLTV = maxLTV;
+        _cleanLiquidationFee = cleanLiquidationFee;
+        _maturityDate = maturityDate;
+        _penaltyRate = penaltyRate;
     }
 
     /// @notice The ```getUserSnapshot``` function gets user level accounting data
@@ -113,9 +190,15 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
     /// @return _userAssetShares The user fToken balance
     /// @return _userBorrowShares The user borrow shares
     /// @return _userCollateralBalance The user collateral balance
-    function getUserSnapshot(
-        address _address
-    ) external view returns (uint256 _userAssetShares, uint256 _userBorrowShares, uint256 _userCollateralBalance) {
+    function getUserSnapshot(address _address)
+        external
+        view
+        returns (
+            uint256 _userAssetShares,
+            uint256 _userBorrowShares,
+            uint256 _userCollateralBalance
+        )
+    {
         _userAssetShares = balanceOf(_address);
         _userBorrowShares = userBorrowShares[_address];
         _userCollateralBalance = userCollateralBalance[_address];
@@ -138,9 +221,11 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
             uint256 _totalCollateral
         )
     {
-        (, , , , VaultAccount memory _totalAsset, VaultAccount memory _totalBorrow) = previewAddInterest();
+        VaultAccount memory _totalAsset = totalAsset;
         _totalAssetAmount = _totalAsset.amount;
         _totalAssetShares = _totalAsset.shares;
+
+        VaultAccount memory _totalBorrow = totalBorrow;
         _totalBorrowAmount = _totalBorrow.amount;
         _totalBorrowShares = _totalBorrow.shares;
         _totalCollateral = totalCollateral;
@@ -149,300 +234,58 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
     /// @notice The ```toBorrowShares``` function converts a given amount of borrow debt into the number of shares
     /// @param _amount Amount of borrow
     /// @param _roundUp Whether to roundup during division
-    /// @param _previewInterest Whether to simulate interest accrual
-    /// @return _shares The number of shares
-    function toBorrowShares(
-        uint256 _amount,
-        bool _roundUp,
-        bool _previewInterest
-    ) external view returns (uint256 _shares) {
-        if (_previewInterest) {
-            (, , , , , VaultAccount memory _totalBorrow) = previewAddInterest();
-            _shares = _totalBorrow.toShares(_amount, _roundUp);
-        } else {
-            _shares = totalBorrow.toShares(_amount, _roundUp);
-        }
+    function toBorrowShares(uint256 _amount, bool _roundUp) external view returns (uint256) {
+        return totalBorrow.toShares(_amount, _roundUp);
     }
 
     /// @notice The ```toBorrowAmount``` function converts a given amount of borrow debt into the number of shares
     /// @param _shares Shares of borrow
     /// @param _roundUp Whether to roundup during division
-    /// @param _previewInterest Whether to simulate interest accrual
-    /// @return _amount The amount of asset
-    function toBorrowAmount(
-        uint256 _shares,
-        bool _roundUp,
-        bool _previewInterest
-    ) external view returns (uint256 _amount) {
-        if (_previewInterest) {
-            (, , , , , VaultAccount memory _totalBorrow) = previewAddInterest();
-            _amount = _totalBorrow.toAmount(_shares, _roundUp);
-        } else {
-            _amount = totalBorrow.toAmount(_shares, _roundUp);
-        }
+    /// @return The amount of asset
+    function toBorrowAmount(uint256 _shares, bool _roundUp) external view returns (uint256) {
+        return totalBorrow.toAmount(_shares, _roundUp);
     }
 
     /// @notice The ```toAssetAmount``` function converts a given number of shares to an asset amount
     /// @param _shares Shares of asset (fToken)
     /// @param _roundUp Whether to round up after division
-    /// @param _previewInterest Whether to preview interest accrual before calculation
-    /// @return _amount The amount of asset
-    function toAssetAmount(
-        uint256 _shares,
-        bool _roundUp,
-        bool _previewInterest
-    ) public view returns (uint256 _amount) {
-        if (_previewInterest) {
-            (, , , , VaultAccount memory _totalAsset, ) = previewAddInterest();
-            _amount = _totalAsset.toAmount(_shares, _roundUp);
-        } else {
-            _amount = totalAsset.toAmount(_shares, _roundUp);
-        }
+    /// @return The amount of asset
+    function toAssetAmount(uint256 _shares, bool _roundUp) external view returns (uint256) {
+        return totalAsset.toAmount(_shares, _roundUp);
     }
 
     /// @notice The ```toAssetShares``` function converts a given asset amount to a number of asset shares (fTokens)
     /// @param _amount The amount of asset
     /// @param _roundUp Whether to round up after division
-    /// @param _previewInterest Whether to preview interest accrual before calculation
-    /// @return _shares The number of shares (fTokens)
-    function toAssetShares(
-        uint256 _amount,
-        bool _roundUp,
-        bool _previewInterest
-    ) public view returns (uint256 _shares) {
-        if (_previewInterest) {
-            (, , , , VaultAccount memory _totalAsset, ) = previewAddInterest();
-            _shares = _totalAsset.toShares(_amount, _roundUp);
-        } else {
-            _shares = totalAsset.toShares(_amount, _roundUp);
-        }
-    }
-
-    function convertToAssets(uint256 _shares) external view returns (uint256 _assets) {
-        _assets = toAssetAmount(_shares, false, true);
-    }
-
-    function convertToShares(uint256 _assets) external view returns (uint256 _shares) {
-        _shares = toAssetShares(_assets, false, true);
-    }
-
-    function pricePerShare() external view returns (uint256 _amount) {
-        _amount = toAssetAmount(1e18, false, true);
-    }
-
-    function totalAssets() external view returns (uint256) {
-        (, , , , VaultAccount memory _totalAsset, ) = previewAddInterest();
-        return _totalAsset.amount;
-    }
-
-    function maxDeposit(address _receiver) public view returns (uint256 _maxAssets) {
-        (, , , , VaultAccount memory _totalAsset, ) = previewAddInterest();
-        _maxAssets = _totalAsset.amount >= depositLimit ? 0 : depositLimit - _totalAsset.amount;
-    }
-
-    function maxMint(address _receiver) external view returns (uint256 _maxShares) {
-        (, , , , VaultAccount memory _totalAsset, ) = previewAddInterest();
-        uint256 _maxDeposit = _totalAsset.amount >= depositLimit ? 0 : depositLimit - _totalAsset.amount;
-        _maxShares = _totalAsset.toShares(_maxDeposit, false);
-    }
-
-    function maxWithdraw(address _owner) external view returns (uint256 _maxAssets) {
-        if (isWithdrawPaused) return 0;
-        (
-            ,
-            ,
-            uint256 _feesShare,
-            ,
-            VaultAccount memory _totalAsset,
-            VaultAccount memory _totalBorrow
-        ) = previewAddInterest();
-        // Get the owner balance and include the fees share if owner is this contract
-        uint256 _ownerBalance = _owner == address(this) ? balanceOf(_owner) + _feesShare : balanceOf(_owner);
-
-        // Return the lower of total assets in contract or total assets available to _owner
-        uint256 _totalAssetsAvailable = _totalAssetAvailable(_totalAsset, _totalBorrow);
-        uint256 _totalUserWithdraw = _totalAsset.toAmount(_ownerBalance, false);
-        _maxAssets = _totalAssetsAvailable < _totalUserWithdraw ? _totalAssetsAvailable : _totalUserWithdraw;
-    }
-
-    function maxRedeem(address _owner) external view returns (uint256 _maxShares) {
-        if (isWithdrawPaused) return 0;
-        (
-            ,
-            ,
-            uint256 _feesShare,
-            ,
-            VaultAccount memory _totalAsset,
-            VaultAccount memory _totalBorrow
-        ) = previewAddInterest();
-
-        // Calculate the total shares available
-        uint256 _totalAssetsAvailable = _totalAssetAvailable(_totalAsset, _totalBorrow);
-        uint256 _totalSharesAvailable = _totalAsset.toShares(_totalAssetsAvailable, false);
-
-        // Get the owner balance and include the fees share if owner is this contract
-        uint256 _ownerBalance = _owner == address(this) ? balanceOf(_owner) + _feesShare : balanceOf(_owner);
-        _maxShares = _totalSharesAvailable < _ownerBalance ? _totalSharesAvailable : _ownerBalance;
+    /// @return The number of shares (fTokens)
+    function toAssetShares(uint256 _amount, bool _roundUp) external view returns (uint256) {
+        return totalAsset.toShares(_amount, _roundUp);
     }
 
     // ============================================================================================
     // Functions: Configuration
     // ============================================================================================
+    /// @notice The ```SetTimeLock``` event fires when the TIME_LOCK_ADDRESS is set
+    /// @param _oldAddress The original address
+    /// @param _newAddress The new address
+    event SetTimeLock(address _oldAddress, address _newAddress);
 
-    bool public isOracleSetterRevoked;
-
-    /// @notice The ```RevokeOracleSetter``` event is emitted when the oracle setter is revoked
-    event RevokeOracleInfoSetter();
-
-    /// @notice The ```revokeOracleSetter``` function revokes the oracle setter
-    function revokeOracleInfoSetter() external {
-        _requireTimelock();
-        isOracleSetterRevoked = true;
-        emit RevokeOracleInfoSetter();
-    }
-
-    /// @notice The ```SetOracleInfo``` event is emitted when the oracle info (address and max deviation) is set
-    /// @param oldOracle The old oracle address
-    /// @param oldMaxOracleDeviation The old max oracle deviation
-    /// @param newOracle The new oracle address
-    /// @param newMaxOracleDeviation The new max oracle deviation
-    event SetOracleInfo(
-        address oldOracle,
-        uint32 oldMaxOracleDeviation,
-        address newOracle,
-        uint32 newMaxOracleDeviation
-    );
-
-    /// @notice The ```setOracleInfo``` function sets the oracle data
-    /// @param _newOracle The new oracle address
-    /// @param _newMaxOracleDeviation The new max oracle deviation
-    function setOracle(address _newOracle, uint32 _newMaxOracleDeviation) external {
-        _requireTimelock();
-        if (isOracleSetterRevoked) revert SetterRevoked();
-        ExchangeRateInfo memory _exchangeRateInfo = exchangeRateInfo;
-        emit SetOracleInfo(
-            _exchangeRateInfo.oracle,
-            _exchangeRateInfo.maxOracleDeviation,
-            _newOracle,
-            _newMaxOracleDeviation
-        );
-        _exchangeRateInfo.oracle = _newOracle;
-        _exchangeRateInfo.maxOracleDeviation = _newMaxOracleDeviation;
-        exchangeRateInfo = _exchangeRateInfo;
-    }
-
-    bool public isMaxLTVSetterRevoked;
-
-    /// @notice The ```RevokeMaxLTVSetter``` event is emitted when the max LTV setter is revoked
-    event RevokeMaxLTVSetter();
-
-    /// @notice The ```revokeMaxLTVSetter``` function revokes the max LTV setter
-    function revokeMaxLTVSetter() external {
-        _requireTimelock();
-        isMaxLTVSetterRevoked = true;
-        emit RevokeMaxLTVSetter();
-    }
-
-    /// @notice The ```SetMaxLTV``` event is emitted when the max LTV is set
-    /// @param oldMaxLTV The old max LTV
-    /// @param newMaxLTV The new max LTV
-    event SetMaxLTV(uint256 oldMaxLTV, uint256 newMaxLTV);
-
-    /// @notice The ```setMaxLTV``` function sets the max LTV
-    /// @param _newMaxLTV The new max LTV
-    function setMaxLTV(uint256 _newMaxLTV) external {
-        _requireTimelock();
-        if (isMaxLTVSetterRevoked) revert SetterRevoked();
-        emit SetMaxLTV(maxLTV, _newMaxLTV);
-        maxLTV = _newMaxLTV;
-    }
-
-    bool public isRateContractSetterRevoked;
-
-    /// @notice The ```RevokeRateContractSetter``` event is emitted when the rate contract setter is revoked
-    event RevokeRateContractSetter();
-
-    /// @notice The ```revokeRateContractSetter``` function revokes the rate contract setter
-    function revokeRateContractSetter() external {
-        _requireTimelock();
-        isRateContractSetterRevoked = true;
-        emit RevokeRateContractSetter();
-    }
-
-    /// @notice The ```SetRateContract``` event is emitted when the rate contract is set
-    /// @param oldRateContract The old rate contract
-    /// @param newRateContract The new rate contract
-    event SetRateContract(address oldRateContract, address newRateContract);
-
-    /// @notice The ```setRateContract``` function sets the rate contract address
-    /// @param _newRateContract The new rate contract address
-    function setRateContract(address _newRateContract) external {
-        _requireTimelock();
-        if (isRateContractSetterRevoked) revert SetterRevoked();
-        emit SetRateContract(address(rateContract), _newRateContract);
-        rateContract = IRateCalculatorV2(_newRateContract);
-    }
-
-    bool public isLiquidationFeeSetterRevoked;
-
-    /// @notice The ```RevokeLiquidationFeeSetter``` event is emitted when the liquidation fee setter is revoked
-    event RevokeLiquidationFeeSetter();
-
-    /// @notice The ```revokeLiquidationFeeSetter``` function revokes the liquidation fee setter
-    function revokeLiquidationFeeSetter() external {
-        _requireTimelock();
-        isLiquidationFeeSetterRevoked = true;
-        emit RevokeLiquidationFeeSetter();
-    }
-
-    /// @notice The ```SetLiquidationFees``` event is emitted when the liquidation fees are set
-    /// @param oldCleanLiquidationFee The old clean liquidation fee
-    /// @param oldDirtyLiquidationFee The old dirty liquidation fee
-    /// @param oldProtocolLiquidationFee The old protocol liquidation fee
-    /// @param newCleanLiquidationFee The new clean liquidation fee
-    /// @param newDirtyLiquidationFee The new dirty liquidation fee
-    /// @param newProtocolLiquidationFee The new protocol liquidation fee
-    event SetLiquidationFees(
-        uint256 oldCleanLiquidationFee,
-        uint256 oldDirtyLiquidationFee,
-        uint256 oldProtocolLiquidationFee,
-        uint256 newCleanLiquidationFee,
-        uint256 newDirtyLiquidationFee,
-        uint256 newProtocolLiquidationFee
-    );
-
-    /// @notice The ```setLiquidationFees``` function sets the liquidation fees
-    /// @param _newCleanLiquidationFee The new clean liquidation fee
-    /// @param _newDirtyLiquidationFee The new dirty liquidation fee
-    function setLiquidationFees(
-        uint256 _newCleanLiquidationFee,
-        uint256 _newDirtyLiquidationFee,
-        uint256 _newProtocolLiquidationFee
-    ) external {
-        _requireTimelock();
-        if (isLiquidationFeeSetterRevoked) revert SetterRevoked();
-        emit SetLiquidationFees(
-            cleanLiquidationFee,
-            dirtyLiquidationFee,
-            protocolLiquidationFee,
-            _newCleanLiquidationFee,
-            _newDirtyLiquidationFee,
-            _newProtocolLiquidationFee
-        );
-        cleanLiquidationFee = _newCleanLiquidationFee;
-        dirtyLiquidationFee = _newDirtyLiquidationFee;
-        protocolLiquidationFee = _newProtocolLiquidationFee;
+    /// @notice The ```setTimeLock``` function sets the TIME_LOCK address
+    /// @param _newAddress the new time lock address
+    function setTimeLock(address _newAddress) external {
+        if (msg.sender != TIME_LOCK_ADDRESS) revert OnlyTimeLock();
+        emit SetTimeLock(TIME_LOCK_ADDRESS, _newAddress);
+        TIME_LOCK_ADDRESS = _newAddress;
     }
 
     /// @notice The ```ChangeFee``` event first when the fee is changed
-    /// @param newFee The new fee
-    event ChangeFee(uint32 newFee);
+    /// @param _newFee The new fee
+    event ChangeFee(uint32 _newFee);
 
     /// @notice The ```changeFee``` function changes the protocol fee, max 50%
     /// @param _newFee The new fee
-    function changeFee(uint32 _newFee) external {
-        _requireTimelock();
-        if (isInterestPaused) revert InterestPaused();
+    function changeFee(uint32 _newFee) external whenNotPaused {
+        if (msg.sender != TIME_LOCK_ADDRESS) revert OnlyTimeLock();
         if (_newFee > MAX_PROTOCOL_FEE) {
             revert BadProtocolFee();
         }
@@ -452,20 +295,19 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
     }
 
     /// @notice The ```WithdrawFees``` event fires when the fees are withdrawn
-    /// @param shares Number of shares (fTokens) redeemed
-    /// @param recipient To whom the assets were sent
-    /// @param amountToTransfer The amount of fees redeemed
-    event WithdrawFees(uint128 shares, address recipient, uint256 amountToTransfer, uint256 collateralAmount);
+    /// @param _shares Number of _shares (fTokens) redeemed
+    /// @param _recipient To whom the assets were sent
+    /// @param _amountToTransfer The amount of fees redeemed
+    event WithdrawFees(uint128 _shares, address _recipient, uint256 _amountToTransfer);
 
     /// @notice The ```withdrawFees``` function withdraws fees accumulated
     /// @param _shares Number of fTokens to redeem
     /// @param _recipient Address to send the assets
     /// @return _amountToTransfer Amount of assets sent to recipient
     function withdrawFees(uint128 _shares, address _recipient) external onlyOwner returns (uint256 _amountToTransfer) {
-        if (_recipient == address(0)) revert InvalidReceiver();
-
         // Grab some data from state to save gas
         VaultAccount memory _totalAsset = totalAsset;
+        VaultAccount memory _totalBorrow = totalBorrow;
 
         // Take all available if 0 value passed
         if (_shares == 0) _shares = uint128(balanceOf(address(this)));
@@ -473,17 +315,30 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
         // We must calculate this before we subtract from _totalAsset or invoke _burn
         _amountToTransfer = _totalAsset.toAmount(_shares, true);
 
-        _approve(address(this), msg.sender, _shares);
-        _redeem(_totalAsset, _amountToTransfer.toUint128(), _shares, _recipient, address(this));
-        uint256 _collateralAmount = userCollateralBalance[address(this)];
-        _removeCollateral(_collateralAmount, _recipient, address(this));
-        emit WithdrawFees(_shares, _recipient, _amountToTransfer, _collateralAmount);
+        // Check for sufficient withdraw liquidity
+        uint256 _assetsAvailable = _totalAssetAvailable(_totalAsset, _totalBorrow);
+        if (_assetsAvailable < _amountToTransfer) {
+            revert InsufficientAssetsInContract(_assetsAvailable, _amountToTransfer);
+        }
+
+        // Effects: bookkeeping
+        _totalAsset.amount -= uint128(_amountToTransfer);
+        _totalAsset.shares -= _shares;
+
+        // Effects: write to states
+        // NOTE: will revert if _shares > balanceOf(address(this))
+        _burn(address(this), _shares);
+        totalAsset = _totalAsset;
+
+        // Interactions
+        assetContract.safeTransfer(_recipient, _amountToTransfer);
+        emit WithdrawFees(_shares, _recipient, _amountToTransfer);
     }
 
     /// @notice The ```SetSwapper``` event fires whenever a swapper is black or whitelisted
-    /// @param swapper The swapper address
-    /// @param approval The approval
-    event SetSwapper(address swapper, bool approval);
+    /// @param _swapper The swapper address
+    /// @param _approval The approval
+    event SetSwapper(address _swapper, bool _approval);
 
     /// @notice The ```setSwapper``` function is called to black or whitelist a given swapper address
     /// @dev
@@ -494,153 +349,63 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
         emit SetSwapper(_swapper, _approval);
     }
 
-    // ============================================================================================
-    // Functions: Access Control
-    // ============================================================================================
+    /// @notice The ```SetApprovedLender``` event fires when a lender is black or whitelisted
+    /// @param _address The address
+    /// @param _approval The approval
+    event SetApprovedLender(address indexed _address, bool _approval);
 
-    /// @notice The ```pause``` function is called to pause all contract functionality
+    /// @notice The ```setApprovedLenders``` function sets a given set of addresses to the whitelist
+    /// @dev Cannot black list self
+    /// @param _lenders The addresses who's status will be set
+    /// @param _approval The approval status
+    function setApprovedLenders(address[] calldata _lenders, bool _approval) external approvedLender(msg.sender) {
+        for (uint256 i = 0; i < _lenders.length; i++) {
+            // Do not set when _approval == false and _lender == msg.sender
+            if (_approval || _lenders[i] != msg.sender) {
+                approvedLenders[_lenders[i]] = _approval;
+                emit SetApprovedLender(_lenders[i], _approval);
+            }
+        }
+    }
+
+    /// @notice The ```SetApprovedBorrower``` event fires when a borrower is black or whitelisted
+    /// @param _address The address
+    /// @param _approval The approval
+    event SetApprovedBorrower(address indexed _address, bool _approval);
+
+    /// @notice The ```setApprovedBorrowers``` function sets a given array of addresses to the whitelist
+    /// @dev Cannot black list self
+    /// @param _borrowers The addresses who's status will be set
+    /// @param _approval The approval status
+    function setApprovedBorrowers(address[] calldata _borrowers, bool _approval) external approvedBorrower {
+        for (uint256 i = 0; i < _borrowers.length; i++) {
+            // Do not set when _approval == false and _borrower == msg.sender
+            if (_approval || _borrowers[i] != msg.sender) {
+                approvedBorrowers[_borrowers[i]] = _approval;
+                emit SetApprovedBorrower(_borrowers[i], _approval);
+            }
+        }
+    }
+
     function pause() external {
-        _requireProtocolOrOwner();
-        if (!isBorrowAccessControlRevoked) _setBorrowLimit(0);
-        if (!isDepositAccessControlRevoked) _setDepositLimit(0);
-        if (!isRepayAccessControlRevoked) _pauseRepay(true);
-        if (!isWithdrawAccessControlRevoked) _pauseWithdraw(true);
-        if (!isLiquidateAccessControlRevoked) _pauseLiquidate(true);
-        if (!isInterestAccessControlRevoked) {
-            _addInterest();
-            _pauseInterest(true);
+        if (
+            msg.sender != CIRCUIT_BREAKER_ADDRESS &&
+            msg.sender != COMPTROLLER_ADDRESS &&
+            msg.sender != owner() &&
+            msg.sender != DEPLOYER_ADDRESS
+        ) {
+            revert ProtocolOrOwnerOnly();
         }
+        _addInterest(); // accrue any interest prior to pausing as it won't accrue during pause
+        _pause();
     }
 
-    /// @notice The ```unpause``` function is called to unpause all contract functionality
     function unpause() external {
-        _requireTimelockOrOwner();
-        if (!isBorrowAccessControlRevoked) _setBorrowLimit(type(uint256).max);
-        if (!isDepositAccessControlRevoked) _setDepositLimit(type(uint256).max);
-        if (!isRepayAccessControlRevoked) _pauseRepay(false);
-        if (!isWithdrawAccessControlRevoked) _pauseWithdraw(false);
-        if (!isLiquidateAccessControlRevoked) _pauseLiquidate(false);
-        if (!isInterestAccessControlRevoked) {
-            _addInterest();
-            _pauseInterest(false);
+        if (msg.sender != COMPTROLLER_ADDRESS && msg.sender != owner()) {
+            revert ProtocolOrOwnerOnly();
         }
-    }
-
-    /// @notice The ```pauseBorrow``` function sets borrow limit to 0
-    function pauseBorrow() external {
-        _requireProtocolOrOwner();
-        if (isBorrowAccessControlRevoked) revert AccessControlRevoked();
-        _setBorrowLimit(0);
-    }
-
-    /// @notice The ```setBorrowLimit``` function sets the borrow limit
-    /// @param _limit The new borrow limit
-    function setBorrowLimit(uint256 _limit) external {
-        _requireTimelockOrOwner();
-        if (isBorrowAccessControlRevoked) revert AccessControlRevoked();
-        _setBorrowLimit(_limit);
-    }
-
-    /// @notice The ```revokeBorrowLimitAccessControl``` function revokes borrow limit access control
-    /// @param _borrowLimit The new borrow limit
-    function revokeBorrowLimitAccessControl(uint256 _borrowLimit) external {
-        _requireTimelock();
-        _revokeBorrowAccessControl(_borrowLimit);
-    }
-
-    /// @notice The ```pauseDeposit``` function pauses deposit functionality
-    function pauseDeposit() external {
-        _requireProtocolOrOwner();
-        if (isDepositAccessControlRevoked) revert AccessControlRevoked();
-        _setDepositLimit(0);
-    }
-
-    /// @notice The ```setDepositLimit``` function sets the deposit limit
-    /// @param _limit The new deposit limit
-    function setDepositLimit(uint256 _limit) external {
-        _requireTimelockOrOwner();
-        if (isDepositAccessControlRevoked) revert AccessControlRevoked();
-        _setDepositLimit(_limit);
-    }
-
-    /// @notice The ```revokeDepositLimitAccessControl``` function revokes deposit limit access control
-    /// @param _depositLimit The new deposit limit
-    function revokeDepositLimitAccessControl(uint256 _depositLimit) external {
-        _requireTimelock();
-        _revokeDepositAccessControl(_depositLimit);
-    }
-
-    /// @notice The ```pauseRepay``` function pauses repay functionality
-    /// @param _isPaused The new pause state
-    function pauseRepay(bool _isPaused) external {
-        if (_isPaused) {
-            _requireProtocolOrOwner();
-        } else {
-            _requireTimelockOrOwner();
-        }
-        if (isRepayAccessControlRevoked) revert AccessControlRevoked();
-        _pauseRepay(_isPaused);
-    }
-
-    /// @notice The ```revokeRepayAccessControl``` function revokes repay access control
-    function revokeRepayAccessControl() external {
-        _requireTimelock();
-        _revokeRepayAccessControl();
-    }
-
-    /// @notice The ```pauseWithdraw``` function pauses withdraw functionality
-    /// @param _isPaused The new pause state
-    function pauseWithdraw(bool _isPaused) external {
-        if (_isPaused) {
-            _requireProtocolOrOwner();
-        } else {
-            _requireTimelockOrOwner();
-        }
-        if (isWithdrawAccessControlRevoked) revert AccessControlRevoked();
-        _pauseWithdraw(_isPaused);
-    }
-
-    /// @notice The ```revokeWithdrawAccessControl``` function revokes withdraw access control
-    function revokeWithdrawAccessControl() external {
-        _requireTimelock();
-        _revokeWithdrawAccessControl();
-    }
-
-    /// @notice The ```pauseLiquidate``` function pauses liquidate functionality
-    /// @param _isPaused The new pause state
-    function pauseLiquidate(bool _isPaused) external {
-        if (_isPaused) {
-            _requireProtocolOrOwner();
-        } else {
-            _requireTimelockOrOwner();
-        }
-        if (isLiquidateAccessControlRevoked) revert AccessControlRevoked();
-        _pauseLiquidate(_isPaused);
-    }
-
-    /// @notice The ```revokeLiquidateAccessControl``` function revokes liquidate access control
-    function revokeLiquidateAccessControl() external {
-        _requireTimelock();
-        _revokeLiquidateAccessControl();
-    }
-
-    /// @notice The ```pauseInterest``` function pauses interest functionality
-    /// @param _isPaused The new pause state
-    function pauseInterest(bool _isPaused) external {
-        if (_isPaused) {
-            _requireProtocolOrOwner();
-        } else {
-            _requireTimelockOrOwner();
-        }
-        if (isInterestAccessControlRevoked) revert AccessControlRevoked();
         // Resets the lastTimestamp which has the effect of no interest accruing over the pause period
         _addInterest();
-        _pauseInterest(_isPaused);
-    }
-
-    /// @notice The ```revokeInterestAccessControl``` function revokes interest access control
-    function revokeInterestAccessControl() external {
-        _requireTimelock();
-        _revokeInterestAccessControl();
+        _unpause();
     }
 }

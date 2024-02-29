@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: ISC
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.16;
 
 // ====================================================================
 // |     ______                   _______                             |
@@ -25,80 +25,89 @@ pragma solidity ^0.8.19;
 
 // ====================================================================
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
-import { SSTORE2 } from "@rari-capital/solmate/src/utils/SSTORE2.sol";
-import { BytesLib } from "solidity-bytes-utils/contracts/BytesLib.sol";
-import { IFraxlendWhitelist } from "./interfaces/IFraxlendWhitelist.sol";
-import { IFraxlendPair } from "./interfaces/IFraxlendPair.sol";
-import { IFraxlendPairRegistry } from "./interfaces/IFraxlendPairRegistry.sol";
-import { SafeERC20 } from "./libraries/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@rari-capital/solmate/src/utils/SSTORE2.sol";
+import "solidity-bytes-utils/contracts/BytesLib.sol";
+import "./interfaces/IRateCalculator.sol";
+import "./interfaces/IFraxlendWhitelist.sol";
+import "./interfaces/IFraxlendPair.sol";
+import "./libraries/SafeERC20.sol";
 
 // solhint-disable no-inline-assembly
-
-struct ConstructorParams {
-    address circuitBreaker;
-    address comptroller;
-    address timelock;
-    address fraxlendWhitelist;
-    address fraxlendPairRegistry;
-}
 
 /// @title FraxlendPairDeployer
 /// @author Drake Evans (Frax Finance) https://github.com/drakeevans
 /// @notice Deploys and initializes new FraxlendPairs
 /// @dev Uses create2 to deploy the pairs, logs an event, and records a list of all deployed pairs
 contract FraxlendPairDeployer is Ownable {
-    using Strings for uint256;
     using SafeERC20 for IERC20;
+    using Strings for uint256;
 
-    // Storage
-    address public contractAddress1;
-    address public contractAddress2;
+    // Constants
+    uint256 public DEFAULT_MAX_LTV = 75000; // 75% with 1e5 precision
+    uint256 public GLOBAL_MAX_LTV = 1e8; // 1000x (100,000%) with 1e5 precision, protects from rounding errors in LTV calc
+    uint256 public DEFAULT_LIQ_FEE = 10000; // 10% with 1e5 precision
+
+    address private contractAddress1;
+    address private contractAddress2;
 
     // Admin contracts
-    address public circuitBreakerAddress;
-    address public comptrollerAddress;
-    address public timelockAddress;
-    address public fraxlendPairRegistryAddress;
-    address public fraxlendWhitelistAddress;
+    address public CIRCUIT_BREAKER_ADDRESS;
+    address public COMPTROLLER_ADDRESS;
+    address public TIME_LOCK_ADDRESS;
+
+    // Dependencies
+    address public immutable FRAXLEND_WHITELIST_ADDRESS;
 
     // Default swappers
     address[] public defaultSwappers;
 
     /// @notice Emits when a new pair is deployed
     /// @notice The ```LogDeploy``` event is emitted when a new Pair is deployed
-    /// @param address_ The address of the pair
-    /// @param asset The address of the Asset Token contract
-    /// @param collateral The address of the Collateral Token contract
-    /// @param name The name of the Pair
-    /// @param configData The config data of the Pair
-    /// @param immutables The immutables of the Pair
-    /// @param customConfigData The custom config data of the Pair
+    /// @param _name The name of the Pair
+    /// @param _address The address of the pair
+    /// @param _asset The address of the Asset Token contract
+    /// @param _collateral The address of the Collateral Token contract
+    /// @param _oracleMultiply The address of the numerator price Oracle
+    /// @param _oracleDivide The address of the denominator price Oracle
+    /// @param _rateContract The address of the Rate Calculator contract
+    /// @param _maxLTV The Maximum Loan-To-Value for a borrower to be considered solvent (1e5 precision)
+    /// @param _liquidationFee The fee paid to liquidators given as a % of the repayment (1e5 precision)
+    /// @param _maturityDate The maturityDate of the Pair
     event LogDeploy(
-        address indexed address_,
-        address indexed asset,
-        address indexed collateral,
-        string name,
-        bytes configData,
-        bytes immutables,
-        bytes customConfigData
+        string indexed _name,
+        address _address,
+        address indexed _asset,
+        address indexed _collateral,
+        address _oracleMultiply,
+        address _oracleDivide,
+        address _rateContract,
+        uint256 _maxLTV,
+        uint256 _liquidationFee,
+        uint256 _maturityDate
     );
 
+    /// @notice CREATE2 salt => deployed address
+    mapping(bytes32 => address) public deployedPairsBySalt;
+    /// @notice hash of name => deployed address
+    mapping(string => address) public deployedPairsByName;
+    /// @notice address => isCustom boolean
+    mapping(address => bool) public deployedPairCustomStatusByAddress;
     /// @notice List of the names of all deployed Pairs
-    address[] public deployedPairsArray;
+    string[] public deployedPairsArray;
 
-    constructor(ConstructorParams memory _params) Ownable() {
-        circuitBreakerAddress = _params.circuitBreaker;
-        comptrollerAddress = _params.comptroller;
-        timelockAddress = _params.timelock;
-        fraxlendWhitelistAddress = _params.fraxlendWhitelist;
-        fraxlendPairRegistryAddress = _params.fraxlendPairRegistry;
-    }
-
-    function version() external pure returns (uint256 _major, uint256 _minor, uint256 _patch) {
-        return (4, 1, 0);
+    constructor(
+        address _circuitBreaker,
+        address _comptroller,
+        address _timelock,
+        address _fraxlendWhitelist
+    ) Ownable() {
+        CIRCUIT_BREAKER_ADDRESS = _circuitBreaker;
+        COMPTROLLER_ADDRESS = _comptroller;
+        TIME_LOCK_ADDRESS = _timelock;
+        FRAXLEND_WHITELIST_ADDRESS = _fraxlendWhitelist;
     }
 
     // ============================================================================================
@@ -112,38 +121,46 @@ contract FraxlendPairDeployer is Ownable {
     }
 
     /// @notice The ```getAllPairAddresses``` function returns all pair addresses in deployedPairsArray
-    /// @return _deployedPairs memory All deployed pair addresses
-    function getAllPairAddresses() external view returns (address[] memory _deployedPairs) {
-        _deployedPairs = deployedPairsArray;
+    /// @return memory All deployed pair addresses
+    function getAllPairAddresses() external view returns (address[] memory) {
+        string[] memory _deployedPairsArray = deployedPairsArray;
+        uint256 _lengthOfArray = _deployedPairsArray.length;
+        address[] memory _addresses = new address[](_lengthOfArray);
+        uint256 i;
+        for (i = 0; i < _lengthOfArray; ) {
+            _addresses[i] = deployedPairsByName[_deployedPairsArray[i]];
+            unchecked {
+                i++;
+            }
+        }
+        return _addresses;
     }
 
-    function getNextNameSymbol(
-        address _asset,
-        address _collateral
-    ) public view returns (string memory _name, string memory _symbol) {
-        uint256 _length = IFraxlendPairRegistry(fraxlendPairRegistryAddress).deployedPairsLength();
-        _name = string(
-            abi.encodePacked(
-                "Fraxlend Interest Bearing ",
-                IERC20(_asset).safeSymbol(),
-                " (",
-                IERC20(_collateral).safeName(),
-                ")",
-                " - ",
-                (_length + 1).toString()
-            )
-        );
-        _symbol = string(
-            abi.encodePacked(
-                "f",
-                IERC20(_asset).safeSymbol(),
-                "(",
-                IERC20(_collateral).safeSymbol(),
-                ")",
-                "-",
-                (_length + 1).toString()
-            )
-        );
+    struct PairCustomStatus {
+        address _address;
+        bool _isCustom;
+    }
+
+    /// @notice The ```getCustomStatuses``` function returns an array of structs which contain the address and custom status
+    /// @param _addresses Addresses to check for custom status
+    /// @return _pairCustomStatuses memory Array of structs containing information
+    function getCustomStatuses(address[] calldata _addresses)
+        external
+        view
+        returns (PairCustomStatus[] memory _pairCustomStatuses)
+    {
+        uint256 _lengthOfArray = _addresses.length;
+        uint256 i;
+        _pairCustomStatuses = new PairCustomStatus[](_lengthOfArray);
+        for (i = 0; i < _lengthOfArray; ) {
+            _pairCustomStatuses[i] = PairCustomStatus({
+                _address: _addresses[i],
+                _isCustom: deployedPairCustomStatusByAddress[_addresses[i]]
+            });
+            unchecked {
+                i++;
+            }
+        }
     }
 
     // ============================================================================================
@@ -154,10 +171,10 @@ contract FraxlendPairDeployer is Ownable {
     /// @dev splits the data if necessary to accommodate creation code that is slightly larger than 24kb
     /// @param _creationCode The creationCode for the Fraxlend Pair
     function setCreationCode(bytes calldata _creationCode) external onlyOwner {
-        bytes memory _firstHalf = BytesLib.slice(_creationCode, 0, 13_000);
+        bytes memory _firstHalf = BytesLib.slice(_creationCode, 0, 13000);
         contractAddress1 = SSTORE2.write(_firstHalf);
-        if (_creationCode.length > 13_000) {
-            bytes memory _secondHalf = BytesLib.slice(_creationCode, 13_000, _creationCode.length - 13_000);
+        if (_creationCode.length > 13000) {
+            bytes memory _secondHalf = BytesLib.slice(_creationCode, 13000, _creationCode.length - 13000);
             contractAddress2 = SSTORE2.write(_secondHalf);
         }
     }
@@ -168,137 +185,235 @@ contract FraxlendPairDeployer is Ownable {
         defaultSwappers = _swappers;
     }
 
-    /// @notice The ```SetTimelock``` event is emitted when the timelockAddress is set
-    /// @param oldAddress The original address
-    /// @param newAddress The new address
-    event SetTimelock(address oldAddress, address newAddress);
+    /// @notice The ```SetDefaultTimeLock``` event fires when the TIME_LOCK_ADDRESS is set
+    /// @param _oldAddress The original address
+    /// @param _newAddress The new address
+    event SetTimeLock(address _oldAddress, address _newAddress);
 
-    /// @notice The ```setTimelock``` function sets the timelockAddress
+    /// @notice The ```setTimeLock``` function sets the TIME_LOCK address
     /// @param _newAddress the new time lock address
-    function setTimelock(address _newAddress) external onlyOwner {
-        emit SetTimelock(timelockAddress, _newAddress);
-        timelockAddress = _newAddress;
-    }
-
-    /// @notice The ```SetRegistry``` event is emitted when the fraxlendPairRegistryAddress is set
-    /// @param oldAddress The old address
-    /// @param newAddress The new address
-    event SetRegistry(address oldAddress, address newAddress);
-
-    /// @notice The ```setRegistry``` function sets the fraxlendPairRegistryAddress
-    /// @param _newAddress The new address
-    function setRegistry(address _newAddress) external onlyOwner {
-        emit SetRegistry(fraxlendPairRegistryAddress, _newAddress);
-        fraxlendPairRegistryAddress = _newAddress;
-    }
-
-    /// @notice The ```SetComptroller``` event is emitted when the comptrollerAddress is set
-    /// @param oldAddress The old address
-    /// @param newAddress The new address
-    event SetComptroller(address oldAddress, address newAddress);
-
-    /// @notice The ```setComptroller``` function sets the comptrollerAddress
-    /// @param _newAddress The new address
-    function setComptroller(address _newAddress) external onlyOwner {
-        emit SetComptroller(comptrollerAddress, _newAddress);
-        comptrollerAddress = _newAddress;
-    }
-
-    /// @notice The ```SetWhitelist``` event is emitted when the fraxlendWhitelistAddress is set
-    /// @param oldAddress The old address
-    /// @param newAddress The new address
-    event SetWhitelist(address oldAddress, address newAddress);
-
-    /// @notice The ```setWhitelist``` function sets the fraxlendWhitelistAddress
-    /// @param _newAddress The new address
-    function setWhitelist(address _newAddress) external onlyOwner {
-        emit SetWhitelist(fraxlendWhitelistAddress, _newAddress);
-        fraxlendWhitelistAddress = _newAddress;
-    }
-
-    /// @notice The ```SetCircuitBreaker``` event is emitted when the circuitBreakerAddress is set
-    /// @param oldAddress The old address
-    /// @param newAddress The new address
-    event SetCircuitBreaker(address oldAddress, address newAddress);
-
-    /// @notice The ```setCircuitBreaker``` function sets the circuitBreakerAddress
-    /// @param _newAddress The new address
-    function setCircuitBreaker(address _newAddress) external onlyOwner {
-        emit SetCircuitBreaker(circuitBreakerAddress, _newAddress);
-        circuitBreakerAddress = _newAddress;
+    function setDefaultTimeLock(address _newAddress) external onlyOwner {
+        emit SetTimeLock(TIME_LOCK_ADDRESS, _newAddress);
+        TIME_LOCK_ADDRESS = _newAddress;
     }
 
     // ============================================================================================
     // Functions: Internal Methods
     // ============================================================================================
 
-    /// @notice The ```_deploy``` function is an internal function with deploys the pair
-    /// @param _configData abi.encode(address _asset, address _collateral, address _oracle, uint32 _maxOracleDeviation, address _rateContract, uint64 _fullUtilizationRate, uint256 _maxLTV, uint256 _cleanLiquidationFee, uint256 _dirtyLiquidationFee, uint256 _protocolLiquidationFee)
-    /// @param _immutables abi.encode(address _circuitBreakerAddress, address _comptrollerAddress, address _timelockAddress)
-    /// @param _customConfigData abi.encode(string memory _nameOfContract, string memory _symbolOfContract, uint8 _decimalsOfContract)
+    /// @notice The ```_deployFirst``` function is an internal function with deploys the pair
+    /// @param _configData abi.encode(address _asset, address _collateral, address _oracleMultiply, address _oracleDivide, uint256 _oracleNormalization, address _rateContract, bytes memory _rateInitData)
+    /// @param _maxLTV The Maximum Loan-To-Value for a borrower to be considered solvent (1e5 precision)
+    /// @param _liquidationFee The fee paid to liquidators given as a % of the repayment (1e5 precision)
+    /// @param _maturityDate The maturityDate of the Pair
+    /// @param _isBorrowerWhitelistActive Enables borrower whitelist
+    /// @param _isLenderWhitelistActive Enables lender whitelist
     /// @return _pairAddress The address to which the Pair was deployed
-    function _deploy(
+    function _deployFirst(
+        bytes32 _saltSeed,
         bytes memory _configData,
         bytes memory _immutables,
-        bytes memory _customConfigData
+        uint256 _maxLTV,
+        uint256 _liquidationFee,
+        uint256 _maturityDate,
+        uint256 _penaltyRate,
+        bool _isBorrowerWhitelistActive,
+        bool _isLenderWhitelistActive
     ) private returns (address _pairAddress) {
-        // Get creation code
-        bytes memory _creationCode = BytesLib.concat(SSTORE2.read(contractAddress1), SSTORE2.read(contractAddress2));
+        {
+            // _saltSeed is the same for all public pairs so duplicates cannot be created
+            bytes32 salt = keccak256(abi.encodePacked(_saltSeed, _configData));
+            require(deployedPairsBySalt[salt] == address(0), "FraxlendPairDeployer: Pair already deployed");
 
-        // Get bytecode
-        bytes memory bytecode = abi.encodePacked(
-            _creationCode,
-            abi.encode(_configData, _immutables, _customConfigData)
-        );
+            bytes memory _creationCode = BytesLib.concat(
+                SSTORE2.read(contractAddress1),
+                SSTORE2.read(contractAddress2)
+            );
+            bytes memory bytecode = abi.encodePacked(
+                _creationCode,
+                abi.encode(
+                    _configData,
+                    _immutables,
+                    _maxLTV,
+                    _liquidationFee,
+                    _maturityDate,
+                    _penaltyRate,
+                    _isBorrowerWhitelistActive,
+                    _isLenderWhitelistActive
+                )
+            );
 
-        // Generate salt using constructor params
-        bytes32 salt = keccak256(abi.encodePacked(_configData, _immutables, _customConfigData));
+            assembly {
+                _pairAddress := create2(0, add(bytecode, 32), mload(bytecode), salt)
+            }
+            require(_pairAddress != address(0), "FraxlendPairDeployer: create2 failed");
 
-        /// @solidity memory-safe-assembly
-        assembly {
-            _pairAddress := create2(0, add(bytecode, 32), mload(bytecode), salt)
+            deployedPairsBySalt[salt] = _pairAddress;
         }
-        if (_pairAddress == address(0)) revert Create2Failed();
 
-        deployedPairsArray.push(_pairAddress);
+        return _pairAddress;
+    }
+
+    /// @notice The ```_deploySecond``` function is the second part of deployment, it invoked the initialize() on the Pair
+    /// @param _name The name of the Pair
+    /// @param _pairAddress The address of the Pair
+    /// @param _configData abi.encode(address _asset, address _collateral, address _oracleMultiply, address _oracleDivide, uint256 _oracleNormalization, address _rateContract, bytes memory _rateInitData)
+    /// @param _approvedBorrowers An array of approved borrower addresses
+    /// @param _approvedLenders An array of approved lender addresses
+    function _deploySecond(
+        string memory _name,
+        address _pairAddress,
+        bytes memory _configData,
+        address[] memory _approvedBorrowers,
+        address[] memory _approvedLenders
+    ) private {
+        (, , , , , , bytes memory _rateInitData) = abi.decode(
+            _configData,
+            (address, address, address, address, uint256, address, bytes)
+        );
+        require(deployedPairsByName[_name] == address(0), "FraxlendPairDeployer: Pair name must be unique");
+        deployedPairsByName[_name] = _pairAddress;
+        deployedPairsArray.push(_name);
 
         // Set additional values for FraxlendPair
         IFraxlendPair _fraxlendPair = IFraxlendPair(_pairAddress);
+        _fraxlendPair.initialize(_name, _approvedBorrowers, _approvedLenders, _rateInitData);
         address[] memory _defaultSwappers = defaultSwappers;
         for (uint256 i = 0; i < _defaultSwappers.length; i++) {
             _fraxlendPair.setSwapper(_defaultSwappers[i], true);
         }
 
-        return _pairAddress;
+        // Transfer Ownership of FraxlendPair
+        _fraxlendPair.transferOwnership(COMPTROLLER_ADDRESS);
+    }
+
+    /// @notice The ```_logDeploy``` function emits a LogDeploy event
+    /// @param _name The name of the Pair
+    /// @param _pairAddress The address of the Pair
+    /// @param _configData abi.encode(address _asset, address _collateral, address _oracleMultiply, address _oracleDivide, uint256 _oracleNormalization, address _rateContract, bytes memory _rateInitData)
+    /// @param _maxLTV The Maximum Loan-To-Value for a borrower to be considered solvent (1e5 precision)
+    /// @param _liquidationFee The fee paid to liquidators given as a % of the repayment (1e5 precision)
+    /// @param _maturityDate The maturityDate of the Pair
+    function _logDeploy(
+        string memory _name,
+        address _pairAddress,
+        bytes memory _configData,
+        uint256 _maxLTV,
+        uint256 _liquidationFee,
+        uint256 _maturityDate
+    ) private {
+        (
+            address _asset,
+            address _collateral,
+            address _oracleMultiply,
+            address _oracleDivide,
+            ,
+            address _rateContract,
+
+        ) = abi.decode(_configData, (address, address, address, address, uint256, address, bytes));
+        emit LogDeploy(
+            _name,
+            _pairAddress,
+            _asset,
+            _collateral,
+            _oracleMultiply,
+            _oracleDivide,
+            _rateContract,
+            _maxLTV,
+            _liquidationFee,
+            _maturityDate
+        );
     }
 
     // ============================================================================================
     // Functions: External Deploy Methods
     // ============================================================================================
 
-    /// @notice The ```deploy``` function allows the deployment of a FraxlendPair with default values
-    /// @param _configData abi.encode(address _asset, address _collateral, address _oracle, uint32 _maxOracleDeviation, address _rateContract, uint64 _fullUtilizationRate, uint256 _maxLTV, uint256 _cleanLiquidationFee, uint256 _dirtyLiquidationFee, uint256 _protocolLiquidationFee)
+    /// @notice The ```deploy``` function allows anyone to create a custom lending market between an Asset and Collateral Token
+    /// @param _configData abi.encode(address _asset, address _collateral, address _oracleMultiply, address _oracleDivide, uint256 _oracleNormalization, address _rateContract, bytes memory _rateInitData)
     /// @return _pairAddress The address to which the Pair was deployed
     function deploy(bytes memory _configData) external returns (address _pairAddress) {
-        if (!IFraxlendWhitelist(fraxlendWhitelistAddress).fraxlendDeployerWhitelist(msg.sender)) {
-            revert WhitelistedDeployersOnly();
-        }
-
-        (address _asset, address _collateral, , , , , , , ) = abi.decode(
+        (address _asset, address _collateral, , , , address _rateContract, ) = abi.decode(
             _configData,
-            (address, address, address, uint32, address, uint64, uint256, uint256, uint256)
+            (address, address, address, address, uint256, address, bytes)
+        );
+        string memory _name = string(
+            abi.encodePacked(
+                "FraxlendV1 - ",
+                IERC20(_collateral).safeName(),
+                "/",
+                IERC20(_asset).safeName(),
+                " - ",
+                IRateCalculator(_rateContract).name(),
+                " - ",
+                (deployedPairsArray.length + 1).toString()
+            )
         );
 
-        (string memory _name, string memory _symbol) = getNextNameSymbol(_asset, _collateral);
+        _pairAddress = _deployFirst(
+            keccak256(abi.encodePacked("public")),
+            _configData,
+            abi.encode(CIRCUIT_BREAKER_ADDRESS, COMPTROLLER_ADDRESS, TIME_LOCK_ADDRESS, FRAXLEND_WHITELIST_ADDRESS),
+            DEFAULT_MAX_LTV,
+            DEFAULT_LIQ_FEE,
+            0,
+            0,
+            false,
+            false
+        );
 
-        bytes memory _immutables = abi.encode(circuitBreakerAddress, comptrollerAddress, timelockAddress);
-        bytes memory _customConfigData = abi.encode(_name, _symbol, IERC20(_asset).safeDecimals());
+        _deploySecond(_name, _pairAddress, _configData, new address[](0), new address[](0));
 
-        _pairAddress = _deploy(_configData, _immutables, _customConfigData);
+        _logDeploy(_name, _pairAddress, _configData, DEFAULT_MAX_LTV, DEFAULT_LIQ_FEE, 0);
+    }
 
-        IFraxlendPairRegistry(fraxlendPairRegistryAddress).addPair(_pairAddress);
+    /// @notice The ```deployCustom``` function allows whitelisted users to deploy custom Term Sheets for OTC debt structuring
+    /// @dev Caller must be added to FraxLedWhitelist
+    /// @param _name The name of the Pair
+    /// @param _configData abi.encode(address _asset, address _collateral, address _oracleMultiply, address _oracleDivide, uint256 _oracleNormalization, address _rateContract, bytes memory _rateInitData)
+    /// @param _maxLTV The Maximum Loan-To-Value for a borrower to be considered solvent (1e5 precision)
+    /// @param _liquidationFee The fee paid to liquidators given as a % of the repayment (1e5 precision)
+    /// @param _maturityDate The maturityDate of the Pair
+    /// @param _approvedBorrowers An array of approved borrower addresses
+    /// @param _approvedLenders An array of approved lender addresses
+    /// @return _pairAddress The address to which the Pair was deployed
+    function deployCustom(
+        string memory _name,
+        bytes memory _configData,
+        uint256 _maxLTV,
+        uint256 _liquidationFee,
+        uint256 _maturityDate,
+        uint256 _penaltyRate,
+        address[] memory _approvedBorrowers,
+        address[] memory _approvedLenders
+    ) external returns (address _pairAddress) {
+        require(_maxLTV <= GLOBAL_MAX_LTV, "FraxlendPairDeployer: _maxLTV is too large");
+        require(
+            IFraxlendWhitelist(FRAXLEND_WHITELIST_ADDRESS).fraxlendDeployerWhitelist(msg.sender),
+            "FraxlendPairDeployer: Only whitelisted addresses"
+        );
+        require(
+            keccak256(abi.encodePacked(_name)) != keccak256(abi.encodePacked("public")),
+            "FraxlendPairDeployer: _name parameter cannot be 'public'"
+        );
 
-        emit LogDeploy(_pairAddress, _asset, _collateral, _name, _configData, _immutables, _customConfigData);
+        _pairAddress = _deployFirst(
+            keccak256(abi.encodePacked(_name)),
+            _configData,
+            abi.encode(CIRCUIT_BREAKER_ADDRESS, COMPTROLLER_ADDRESS, TIME_LOCK_ADDRESS, FRAXLEND_WHITELIST_ADDRESS),
+            _maxLTV,
+            _liquidationFee,
+            _maturityDate,
+            _penaltyRate,
+            _approvedBorrowers.length > 0,
+            _approvedLenders.length > 0
+        );
+
+        _deploySecond(_name, _pairAddress, _configData, _approvedBorrowers, _approvedLenders);
+
+        deployedPairCustomStatusByAddress[_pairAddress] = true;
+
+        _logDeploy(_name, _pairAddress, _configData, _maxLTV, _liquidationFee, _maturityDate);
     }
 
     // ============================================================================================
@@ -310,8 +425,7 @@ contract FraxlendPairDeployer is Ownable {
     /// @param _addresses Addresses to attempt to pause()
     /// @return _updatedAddresses Addresses for which pause() was successful
     function globalPause(address[] memory _addresses) external returns (address[] memory _updatedAddresses) {
-        if (msg.sender != circuitBreakerAddress) revert CircuitBreakerOnly();
-
+        require(msg.sender == CIRCUIT_BREAKER_ADDRESS, "Circuit Breaker only");
         address _pairAddress;
         uint256 _lengthOfArray = _addresses.length;
         _updatedAddresses = new address[](_lengthOfArray);
@@ -325,12 +439,4 @@ contract FraxlendPairDeployer is Ownable {
             }
         }
     }
-
-    // ============================================================================================
-    // Errors
-    // ============================================================================================
-
-    error CircuitBreakerOnly();
-    error WhitelistedDeployersOnly();
-    error Create2Failed();
 }
