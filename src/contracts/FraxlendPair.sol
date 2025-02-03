@@ -522,6 +522,7 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
         if (!isLiquidateAccessControlRevoked) _pauseLiquidate(false);
         if (!isInterestAccessControlRevoked) {
             _addInterest();
+            currentRateInfo.lastTimestamp = uint64(block.timestamp);
             _pauseInterest(false);
         }
     }
@@ -635,6 +636,7 @@ contract FraxlendPair is IERC20Metadata, FraxlendPairCore {
         if (isInterestAccessControlRevoked) revert AccessControlRevoked();
         // Resets the lastTimestamp which has the effect of no interest accruing over the pause period
         _addInterest();
+        if (_isPaused == false) currentRateInfo.lastTimestamp = uint64(block.timestamp);
         _pauseInterest(_isPaused);
     }
 

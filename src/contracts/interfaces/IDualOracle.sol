@@ -33,4 +33,6 @@ interface IDualOracle is IERC165 {
     function QUOTE_TOKEN_1() external view returns (address);
 
     function QUOTE_TOKEN_1_DECIMALS() external view returns (uint256);
+
+    function CHAINLINK_FEED_ADDRESS() external view returns (address);
 }
