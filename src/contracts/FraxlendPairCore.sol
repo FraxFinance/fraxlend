@@ -1130,6 +1130,9 @@ abstract contract FraxlendPairCore is FraxlendPairAccessControl, FraxlendPairCon
         {
             (bool _isBorrowAllowed, , ) = _updateExchangeRate();
             if (!_isBorrowAllowed) revert ExceedsMaxOracleDeviation();
+
+            // Check if borrow will violate the borrow limit and revert if necessary
+            if (borrowLimit < totalBorrow.amount + _borrowAmount) revert ExceedsBorrowLimit();
         }
 
         IERC20 _assetContract = assetContract;

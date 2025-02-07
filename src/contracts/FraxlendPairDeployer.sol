@@ -67,6 +67,9 @@ contract FraxlendPairDeployer is Ownable {
     // Default swappers
     address[] public defaultSwappers;
 
+    /// @notice Amount of asset to seed into each pair on creation
+    uint256 amountToSeed;
+
     /// @notice Emits when a new pair is deployed
     /// @notice The ```LogDeploy``` event is emitted when a new Pair is deployed
     /// @param address_ The address of the pair
@@ -98,7 +101,7 @@ contract FraxlendPairDeployer is Ownable {
     }
 
     function version() external pure returns (uint256 _major, uint256 _minor, uint256 _patch) {
-        return (4, 1, 0);
+        return (5, 0, 0);
     }
 
     // ============================================================================================
@@ -159,6 +162,8 @@ contract FraxlendPairDeployer is Ownable {
         if (_creationCode.length > 13_000) {
             bytes memory _secondHalf = BytesLib.slice(_creationCode, 13_000, _creationCode.length - 13_000);
             contractAddress2 = SSTORE2.write(_secondHalf);
+        } else {
+            contractAddress2 = address(0);
         }
     }
 
@@ -228,6 +233,22 @@ contract FraxlendPairDeployer is Ownable {
         circuitBreakerAddress = _newAddress;
     }
 
+    /// @notice the ```SetAmountToSeed``` event is emitted when the AmountToSeed is set
+    /// @param oldAmountToSeed The old amount to seed new pairs
+    /// @param newAmountToSeed The new amount to seed new pairs
+    event SetAmountToSeed(uint256 oldAmountToSeed, uint256 newAmountToSeed);
+
+    /// @notice the ```setAmountToSeed``` function sets the amount of asset to seed a pair
+    ///         on creation
+    /// @param _amountToSeed The amount of assets to seed the newly created pairs
+    function setAmountToSeed(uint256 _amountToSeed) external {
+        if (!IFraxlendWhitelist(fraxlendWhitelistAddress).fraxlendDeployerWhitelist(msg.sender)) {
+            revert WhitelistedDeployersOnly();
+        }
+        emit SetAmountToSeed(amountToSeed, _amountToSeed);
+        amountToSeed = _amountToSeed;
+    }
+
     // ============================================================================================
     // Functions: Internal Methods
     // ============================================================================================
@@ -243,7 +264,11 @@ contract FraxlendPairDeployer is Ownable {
         bytes memory _customConfigData
     ) private returns (address _pairAddress) {
         // Get creation code
-        bytes memory _creationCode = BytesLib.concat(SSTORE2.read(contractAddress1), SSTORE2.read(contractAddress2));
+        // bytes memory _creationCode = BytesLib.concat(SSTORE2.read(contractAddress1), SSTORE2.read(contractAddress2));
+        bytes memory _creationCode = SSTORE2.read(contractAddress1);
+        if (contractAddress2 != address(0)) {
+            _creationCode = BytesLib.concat(_creationCode, SSTORE2.read(contractAddress2));
+        }
 
         // Get bytecode
         bytes memory bytecode = abi.encodePacked(
@@ -298,6 +323,10 @@ contract FraxlendPairDeployer is Ownable {
 
         IFraxlendPairRegistry(fraxlendPairRegistryAddress).addPair(_pairAddress);
 
+        if (amountToSeed == 0) revert MustSeedPair();
+        IERC20(_asset).safeApprove(_pairAddress, amountToSeed);
+        IFraxlendPair(_pairAddress).deposit(amountToSeed, address(this));
+
         emit LogDeploy(_pairAddress, _asset, _collateral, _name, _configData, _immutables, _customConfigData);
     }
 
@@ -333,4 +362,5 @@ contract FraxlendPairDeployer is Ownable {
     error CircuitBreakerOnly();
     error WhitelistedDeployersOnly();
     error Create2Failed();
+    error MustSeedPair();
 }
