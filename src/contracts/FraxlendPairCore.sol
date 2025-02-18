@@ -974,6 +974,8 @@ abstract contract FraxlendPairCore is FraxlendPairAccessControl, FraxlendPairCon
 
     /// @notice The ```liquidate``` function allows a third party to repay a borrower's debt if they have become insolvent
     /// @dev Caller must invoke ```ERC20.approve``` on the Asset Token contract prior to calling ```Liquidate()```
+    /// @dev Not Intended to be called via EOA, Calling Contracts are encouraged to implement appropriate checks
+    ///      on the return value from this function
     /// @param _sharesToLiquidate The number of Borrow Shares repaid by the liquidator
     /// @param _deadline The timestamp after which tx will revert
     /// @param _borrower The account for which the repayment is credited and from whom collateral will be taken
