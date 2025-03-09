@@ -1,21 +1,12 @@
 [profile.default]
-src = 'src/contracts'
-test = 'src/test'
-out = 'out'
-libs = ['node_modules', 'lib']
-#block number
-block_number = 100
-# The block timestamp in tests
-block_timestamp = 1500
-# allow ffi
-ffi = true
-# gas limit in tests
-gas_limit = 30000000
-# optimizer
-optimizer = true
-# optimizer runs
-optimizer_runs = 200
-# use via-ir optimizer
-# via_ir = true
+    src = 'src/contracts'
+    test = 'test'
+    out = 'out'
+    libs = ['node_modules', 'lib']
+
+    solc = "0.8.19"
+    ffi = true
+    optimizer = false
+    optimizer_runs = 200
 
 # See more config options https://github.com/gakonst/foundry/tree/master/config
